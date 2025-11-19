@@ -4,6 +4,7 @@ import (
 	"context"
 	goErr "errors"
 	"fmt"
+	"net"
 	"path/filepath"
 
 	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
@@ -17,7 +18,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/serviceconnect"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/status"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/tasknetworkconfig"
-	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/net"
+	utilsnet "github.com/aws/amazon-ecs-agent/ecs-agent/utils/net"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -34,6 +35,49 @@ const (
 	DefaultArg                 = "default"
 	NetworkInterfaceDeviceName = "eth1" // default network interface name in the task network namespace.
 )
+
+// calculateVPCDNSServer calculates the VPC DNS server IP from subnet CIDR
+// In AWS VPC, the DNS server is typically the network base + 2
+func calculateVPCDNSServer(subnetCIDR string) (string, error) {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return "", err
+	}
+	
+	// Get the network base IP
+	networkIP := ipNet.IP.To4()
+	if networkIP == nil {
+		return "", fmt.Errorf("invalid IPv4 subnet: %s", subnetCIDR)
+	}
+	
+	// AWS VPC DNS server is network base + 2
+	dnsIP := make(net.IP, len(networkIP))
+	copy(dnsIP, networkIP)
+	dnsIP[3] += 2
+	
+	return dnsIP.String(), nil
+}
+
+// calculateVPCDNSServerIPv6 calculates the VPC DNS server IPv6 from subnet CIDR
+func calculateVPCDNSServerIPv6(subnetCIDR string) (string, error) {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return "", err
+	}
+	
+	// Get the network base IPv6
+	networkIP := ipNet.IP.To16()
+	if networkIP == nil || networkIP.To4() != nil {
+		return "", fmt.Errorf("invalid IPv6 subnet: %s", subnetCIDR)
+	}
+	
+	// AWS VPC IPv6 DNS server is network base + 2
+	dnsIP := make(net.IP, len(networkIP))
+	copy(dnsIP, networkIP)
+	dnsIP[15] += 2
+	
+	return dnsIP.String(), nil
+}
 
 type managedLinux struct {
 	common
@@ -236,7 +280,7 @@ func (m *managedLinux) buildHostNetworkNamespaceConfig(taskID string) ([]*taskne
 		Index:                        aws.Int64(64),
 	}
 
-	ipComp, err := net.DetermineIPCompatibility(m.netlink, macAddress)
+	ipComp, err := utilsnet.DetermineIPCompatibility(m.netlink, macAddress)
 	if err != nil {
 		logger.Error("Failed to determine IP compatibility of host ENI", logger.Fields{
 			loggerfield.Error: err,
@@ -339,7 +383,7 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 		Index:                        aws.Int64(64),
 	}
 
-	ipComp, err := net.DetermineIPCompatibility(m.netlink, macAddress)
+	ipComp, err := utilsnet.DetermineIPCompatibility(m.netlink, macAddress)
 	if err != nil {
 		logger.Error("Failed to determine IP compatibility of host ENI", logger.Fields{
 			loggerfield.Error: err,
@@ -369,7 +413,11 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 			},
 		}
 		hostENI.SubnetGatewayIpv6Address = aws.String(ipv6SubNet)
-	}
+		
+		// Calculate VPC IPv6 DNS server for daemon-bridge mode (network base + 2)
+		if vpcDNSv6, err := calculateVPCDNSServerIPv6(ipv6SubNet); err == nil {
+			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNSv6))
+		}	}
 
 	if ipComp.IsIPv4Compatible() {
 		privateIpv4, err1 := m.client.GetMetadata(PrivateIPv4Address)
@@ -388,6 +436,11 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 			},
 		}
 		hostENI.SubnetGatewayIpv4Address = aws.String(ipv4SubNet)
+		
+		// Calculate VPC DNS server for daemon-bridge mode (network base + 2)
+		if vpcDNS, err := calculateVPCDNSServer(ipv4SubNet); err == nil {
+			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNS))
+		}
 	}
 
 	netNSName := "host-daemon"
