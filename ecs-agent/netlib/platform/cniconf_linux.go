@@ -121,6 +121,55 @@ func createBridgePluginConfig(netNSPath string) ecscni.PluginConfig {
 	return bridgeConfig
 }
 
+// createDaemonBridgePluginConfig constructs the configuration object for bridge plugin in daemon-bridge mode
+// It includes routes to VPC subnet for DNS resolution
+func createDaemonBridgePluginConfig(netNSPath string, vpcSubnet string) ecscni.PluginConfig {
+	cniConfig := ecscni.CNIConfig{
+		NetNSPath:      netNSPath,
+		CNISpecVersion: cniSpecVersion,
+		CNIPluginName:  BridgePluginName,
+	}
+
+	_, routeIPNet, _ := net.ParseCIDR(AgentEndpoint)
+	route := &types.Route{
+		Dst: *routeIPNet,
+	}
+
+	// Add VPC subnet route for DNS resolution
+	var routes []*types.Route
+	routes = append(routes, route)
+	
+	if vpcSubnet != "" {
+		_, vpcIPNet, err := net.ParseCIDR(vpcSubnet)
+		if err == nil {
+			vpcRoute := &types.Route{
+				Dst: *vpcIPNet,
+			}
+			routes = append(routes, vpcRoute)
+		}
+	}
+
+	ipamConfig := &ecscni.IPAMConfig{
+		CNIConfig: ecscni.CNIConfig{
+			NetNSPath:      netNSPath,
+			CNISpecVersion: cniSpecVersion,
+			CNIPluginName:  IPAMPluginName,
+		},
+		IPV4Subnet: ECSSubNet,
+		IPV4Routes: routes,
+		ID:         netNSPath,
+	}
+
+	// Invoke the bridge plugin and ipam plugin
+	bridgeConfig := &ecscni.BridgeConfig{
+		CNIConfig: cniConfig,
+		Name:      BridgeInterfaceName,
+		IPAM:      *ipamConfig,
+	}
+
+	return bridgeConfig
+}
+
 func createAppMeshPluginConfig(
 	netNSPath string,
 	cfg *appmesh.AppMesh,

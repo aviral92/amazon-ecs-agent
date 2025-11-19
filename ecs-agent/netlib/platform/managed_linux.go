@@ -43,18 +43,18 @@ func calculateVPCDNSServer(subnetCIDR string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Get the network base IP
 	networkIP := ipNet.IP.To4()
 	if networkIP == nil {
 		return "", fmt.Errorf("invalid IPv4 subnet: %s", subnetCIDR)
 	}
-	
+
 	// AWS VPC DNS server is network base + 2
 	dnsIP := make(net.IP, len(networkIP))
 	copy(dnsIP, networkIP)
 	dnsIP[3] += 2
-	
+
 	return dnsIP.String(), nil
 }
 
@@ -64,18 +64,18 @@ func calculateVPCDNSServerIPv6(subnetCIDR string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Get the network base IPv6
 	networkIP := ipNet.IP.To16()
 	if networkIP == nil || networkIP.To4() != nil {
 		return "", fmt.Errorf("invalid IPv6 subnet: %s", subnetCIDR)
 	}
-	
+
 	// AWS VPC IPv6 DNS server is network base + 2
 	dnsIP := make(net.IP, len(networkIP))
 	copy(dnsIP, networkIP)
 	dnsIP[15] += 2
-	
+
 	return dnsIP.String(), nil
 }
 
@@ -413,11 +413,12 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 			},
 		}
 		hostENI.SubnetGatewayIpv6Address = aws.String(ipv6SubNet)
-		
+
 		// Calculate VPC IPv6 DNS server for daemon-bridge mode (network base + 2)
 		if vpcDNSv6, err := calculateVPCDNSServerIPv6(ipv6SubNet); err == nil {
 			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNSv6))
-		}	}
+		}
+	}
 
 	if ipComp.IsIPv4Compatible() {
 		privateIpv4, err1 := m.client.GetMetadata(PrivateIPv4Address)
@@ -436,7 +437,7 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 			},
 		}
 		hostENI.SubnetGatewayIpv4Address = aws.String(ipv4SubNet)
-		
+
 		// Calculate VPC DNS server for daemon-bridge mode (network base + 2)
 		if vpcDNS, err := calculateVPCDNSServer(ipv4SubNet); err == nil {
 			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNS))
@@ -493,14 +494,25 @@ func (m *managedLinux) configureDaemonNetNS(ctx context.Context, taskID string, 
 			return err
 		}
 
-		// Create MI-Bridge
+		// Create MI-Bridge with VPC subnet route for daemon-bridge mode
+		// Get subnet from host ENI metadata since daemon namespace uses trunk ENI
+		var vpcSubnet string
+		macAddress, err := m.client.GetMetadata(MacResource)
+		if err == nil {
+			if ipv4SubNet, err := m.client.GetMetadata(fmt.Sprintf(IPv4SubNetCidrBlock, macAddress)); err == nil {
+				vpcSubnet = ipv4SubNet
+			} else if ipv6SubNet, err := m.client.GetMetadata(fmt.Sprintf(IPv6SubNetCidrBlock, macAddress)); err == nil {
+				vpcSubnet = ipv6SubNet
+			}
+		}
+
 		var cniNetConf []ecscni.PluginConfig
-		cniNetConf = append(cniNetConf, createBridgePluginConfig(netNS.Path))
+		cniNetConf = append(cniNetConf, createDaemonBridgePluginConfig(netNS.Path, vpcSubnet))
 		add := true
 
 		_, err = m.common.executeCNIPlugin(ctx, add, cniNetConf...)
 		if err != nil {
-			err = errors.Wrap(err, "failed to setup deamon network namespace bridge")
+			err = errors.Wrap(err, "failed to setup daemon network namespace bridge")
 		}
 
 	}
@@ -525,7 +537,7 @@ func (m *managedLinux) StopDaemonNetNS(ctx context.Context, netNS *tasknetworkco
 
 	_, err := m.common.executeCNIPlugin(ctx, add, cniNetConf...)
 	if err != nil {
-		err = errors.Wrap(err, "failed to stop deamon network namespace bridge")
+		err = errors.Wrap(err, "failed to stop daemon network namespace bridge")
 	}
 
 	// TODO : Delete the daemon namespace only when we have no more daemon tasks running.
