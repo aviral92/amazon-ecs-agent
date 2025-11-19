@@ -135,19 +135,19 @@ func createDaemonBridgePluginConfig(netNSPath string, vpcSubnet string) ecscni.P
 		Dst: *routeIPNet,
 	}
 
-	// Add VPC subnet route for DNS resolution
+	// Add routes for daemon-bridge mode
 	var routes []*types.Route
-	routes = append(routes, route)
+	routes = append(routes, route) // ECS agent endpoint route
 	
-	if vpcSubnet != "" {
-		_, vpcIPNet, err := net.ParseCIDR(vpcSubnet)
-		if err == nil {
-			vpcRoute := &types.Route{
-				Dst: *vpcIPNet,
-			}
-			routes = append(routes, vpcRoute)
-		}
+	// Add default route for external traffic (including VPC DNS)
+	// All external traffic goes through the bridge gateway to reach host's trunk ENI
+	_, defaultNet, _ := net.ParseCIDR("0.0.0.0/0")
+	bridgeGW := net.ParseIP("169.254.172.1")
+	defaultRoute := &types.Route{
+		Dst: *defaultNet,
+		GW:  bridgeGW,
 	}
+	routes = append(routes, defaultRoute)
 
 	ipamConfig := &ecscni.IPAMConfig{
 		CNIConfig: ecscni.CNIConfig{
