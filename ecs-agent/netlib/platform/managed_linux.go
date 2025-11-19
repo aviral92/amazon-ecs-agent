@@ -80,6 +80,10 @@ func (m *managedLinux) CreateDNSConfig(taskID string,
 	if netNS.ServiceConnectConfig != nil {
 		return m.common.createDNSConfig(taskID, false, netNS)
 	}
+	// For daemon-bridge mode, use VPC DNS instead of host DNS to fix DNS resolution
+	if netNS.NetworkMode == "daemon-bridge" {
+		return m.common.createDNSConfig(taskID, false, netNS)
+	}
 	return m.common.createDNSConfig(taskID, true, netNS)
 }
 
