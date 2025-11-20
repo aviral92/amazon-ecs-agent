@@ -5,6 +5,7 @@ import (
 	goErr "errors"
 	"fmt"
 	"net"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
@@ -414,10 +415,8 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 		}
 		hostENI.SubnetGatewayIpv6Address = aws.String(ipv6SubNet)
 
-		// Calculate VPC IPv6 DNS server for daemon-bridge mode (network base + 2)
-		if vpcDNSv6, err := calculateVPCDNSServerIPv6(ipv6SubNet); err == nil {
-			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNSv6))
-		}
+		// Use AWS VPC DNS resolver for daemon-bridge mode
+		hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String("169.254.169.253"))
 	}
 
 	if ipComp.IsIPv4Compatible() {
@@ -438,10 +437,8 @@ func (m *managedLinux) buildHostDaemonNamespaceConfig(taskID string) ([]*tasknet
 		}
 		hostENI.SubnetGatewayIpv4Address = aws.String(ipv4SubNet)
 
-		// Calculate VPC DNS server for daemon-bridge mode (network base + 2)
-		if vpcDNS, err := calculateVPCDNSServer(ipv4SubNet); err == nil {
-			hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String(vpcDNS))
-		}
+		// Use AWS VPC DNS resolver for daemon-bridge mode
+		hostENI.DomainNameServers = append(hostENI.DomainNameServers, aws.String("169.254.169.253"))
 	}
 
 	netNSName := "host-daemon"
@@ -513,6 +510,14 @@ func (m *managedLinux) configureDaemonNetNS(ctx context.Context, taskID string, 
 		_, err = m.common.executeCNIPlugin(ctx, add, cniNetConf...)
 		if err != nil {
 			err = errors.Wrap(err, "failed to setup daemon network namespace bridge")
+		} else {
+			// Add NAT masquerade rule for external connectivity
+			err = m.addDaemonBridgeNATRule()
+			if err != nil {
+				logger.Warn("Failed to add NAT rule for daemon-bridge", logger.Fields{
+					loggerfield.Error: err,
+				})
+			}
 		}
 
 	}
@@ -525,6 +530,23 @@ func (m *managedLinux) configureDaemonNetNS(ctx context.Context, taskID string, 
 // It will contain a loopback interface and a bridge to the internal ECS subnet.
 func (m *managedLinux) ConfigureDaemonNetNS(netNS *tasknetworkconfig.NetworkNamespace) error {
 	return m.configureDaemonNetNS(context.Background(), netNS.Path, netNS)
+}
+
+// addDaemonBridgeNATRule adds iptables MASQUERADE rule for daemon-bridge external connectivity
+func (m *managedLinux) addDaemonBridgeNATRule() error {
+	// Add MASQUERADE rule for traffic from ECS bridge to external destinations
+	cmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", 
+		"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-o", "eth0", "-j", "MASQUERADE")
+	
+	// Check if rule already exists
+	if err := cmd.Run(); err != nil {
+		// Rule doesn't exist, add it
+		cmd = exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
+			"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-o", "eth0", "-j", "MASQUERADE")
+		return cmd.Run()
+	}
+	
+	return nil // Rule already exists
 }
 
 // StopDaemonNetNS stops and cleans up a daemon network namespace.
