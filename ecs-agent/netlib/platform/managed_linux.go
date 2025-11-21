@@ -4,10 +4,6 @@ import (
 	"context"
 	goErr "errors"
 	"fmt"
-	"net"
-	"os/exec"
-	"path/filepath"
-
 	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/ec2"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
@@ -20,6 +16,9 @@ import (
 	"github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/status"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/tasknetworkconfig"
 	utilsnet "github.com/aws/amazon-ecs-agent/ecs-agent/utils/net"
+	"net"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -534,18 +533,31 @@ func (m *managedLinux) ConfigureDaemonNetNS(netNS *tasknetworkconfig.NetworkName
 
 // addDaemonBridgeNATRule adds iptables MASQUERADE rule for daemon-bridge external connectivity
 func (m *managedLinux) addDaemonBridgeNATRule() error {
-	// Add MASQUERADE rule for traffic from ECS bridge to external destinations
-	cmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", 
-		"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-o", "eth0", "-j", "MASQUERADE")
-	
+	// Enable IP forwarding for external connectivity
+	cmd := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to enable IP forwarding: %w", err)
+	}
+
+	// Enable bridge forwarding to allow traffic from bridge to reach host routing table
+	cmd = exec.Command("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1")
+	if err := cmd.Run(); err != nil {
+		// Ignore error if bridge module not loaded
+	}
+
+	// Add MASQUERADE rule for ALL external traffic from ECS bridge
+	// This ensures any destination outside the bridge subnet gets NATed properly
+	cmd = exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
+		"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-j", "MASQUERADE")
+
 	// Check if rule already exists
 	if err := cmd.Run(); err != nil {
-		// Rule doesn't exist, add it
+		// Rule doesn't exist, add it (without specifying output interface for flexibility)
 		cmd = exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-o", "eth0", "-j", "MASQUERADE")
+			"-s", "169.254.172.0/22", "!", "-d", "169.254.172.0/22", "-j", "MASQUERADE")
 		return cmd.Run()
 	}
-	
+
 	return nil // Rule already exists
 }
 
