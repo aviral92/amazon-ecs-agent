@@ -377,15 +377,27 @@ func TestCreateDaemonBridgePluginConfig(t *testing.T) {
 		GW:  bridgeGW,
 	}
 
+	// Add IPv6 default route
+	_, defaultNetv6, _ := net.ParseCIDR(DefaultRouteDestinationv6)
+	bridgeGWv6 := net.ParseIP(DaemonBridgeGatewayIPv6)
+	defaultRoutev6 := &types.Route{
+		Dst: *defaultNetv6,
+		GW:  bridgeGWv6,
+	}
+
 	ipamConfig := &ecscni.IPAMConfig{
 		CNIConfig: ecscni.CNIConfig{
 			NetNSPath:      netNSPath,
 			CNISpecVersion: cniSpecVersion,
 			CNIPluginName:  IPAMPluginName,
 		},
-		IPV4Subnet: ECSSubNet,
-		IPV4Routes: []*types.Route{agentRoute, defaultRoute},
-		ID:         netNSPath,
+		IPV4Subnet:  ECSSubNet,
+		IPV4Gateway: DaemonBridgeGatewayIP,
+		IPV4Routes:  []*types.Route{agentRoute, defaultRoute},
+		IPV6Subnet:  ECSSubNetIPv6,
+		IPV6Gateway: DaemonBridgeGatewayIPv6,
+		IPV6Routes:  []*types.Route{defaultRoutev6},
+		ID:          netNSPath,
 	}
 
 	bridgeConfig := &ecscni.BridgeConfig{

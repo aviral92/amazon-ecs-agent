@@ -140,7 +140,7 @@ func createDaemonBridgePluginConfig(netNSPath string) ecscni.PluginConfig {
 	var routes []*types.Route
 	routes = append(routes, route) // ECS agent endpoint route
 
-	// Add default route for external traffic, which goes through the bridge gateway to reach host's trunk ENI
+	// Add IPv4 default route for external traffic
 	_, defaultNet, _ := net.ParseCIDR(DefaultRouteDestination)
 	bridgeGW := net.ParseIP(DaemonBridgeGatewayIP)
 	defaultRoute := &types.Route{
@@ -149,15 +149,27 @@ func createDaemonBridgePluginConfig(netNSPath string) ecscni.PluginConfig {
 	}
 	routes = append(routes, defaultRoute)
 
+	// Add IPv6 default route for external traffic
+	_, defaultNetv6, _ := net.ParseCIDR(DefaultRouteDestinationv6)
+	bridgeGWv6 := net.ParseIP(DaemonBridgeGatewayIPv6)
+	defaultRoutev6 := &types.Route{
+		Dst: *defaultNetv6,
+		GW:  bridgeGWv6,
+	}
+
 	ipamConfig := &ecscni.IPAMConfig{
 		CNIConfig: ecscni.CNIConfig{
 			NetNSPath:      netNSPath,
 			CNISpecVersion: cniSpecVersion,
 			CNIPluginName:  IPAMPluginName,
 		},
-		IPV4Subnet: ECSSubNet,
-		IPV4Routes: routes,
-		ID:         netNSPath,
+		IPV4Subnet:  ECSSubNet,
+		IPV4Gateway: DaemonBridgeGatewayIP,
+		IPV4Routes:  routes,
+		IPV6Subnet:  ECSSubNetIPv6,
+		IPV6Gateway: DaemonBridgeGatewayIPv6,
+		IPV6Routes:  []*types.Route{defaultRoutev6},
+		ID:          netNSPath,
 	}
 
 	// Invoke the bridge plugin and ipam plugin

@@ -24,6 +24,11 @@ const (
 	// Daemon-bridge networking constants
 	DaemonBridgeGatewayIP   = "169.254.172.1"
 	DefaultRouteDestination = "0.0.0.0/0"
+	
+	// IPv6 daemon-bridge constants (following AWS fd00:ec2:: pattern)
+	ECSSubNetIPv6             = "fd00:ec2:172:0/64"
+	DaemonBridgeGatewayIPv6   = "fd00:ec2:172::1"
+	DefaultRouteDestinationv6 = "::/0"
 
 	CNIPluginLogFileEnv    = "ECS_CNI_LOG_FILE"
 	VPCCNIPluginLogFileEnv = "VPC_CNI_LOG_FILE"

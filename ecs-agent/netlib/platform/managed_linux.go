@@ -503,14 +503,23 @@ func (m *managedLinux) addDaemonBridgeNATRule() error {
 		return err
 	}
 
-	// Check if rule already exists
+	// Add IPv4 NAT rule
 	err := modifyNetfilterEntry(iptablesTableNat, iptablesCheck, getDaemonBridgeNATArgs)
 	if err != nil {
 		// Rule doesn't exist, add it
-		return modifyNetfilterEntry(iptablesTableNat, iptablesAppend, getDaemonBridgeNATArgs)
+		if err := modifyNetfilterEntry(iptablesTableNat, iptablesAppend, getDaemonBridgeNATArgs); err != nil {
+			return err
+		}
 	}
 
-	return nil // Rule already exists
+	// Add IPv6 NAT rule
+	err = modifyNetfilterEntryIPv6(ip6tablesTableNat, iptablesCheck, getDaemonBridgeNATArgsIPv6)
+	if err != nil {
+		// Rule doesn't exist, add it
+		return modifyNetfilterEntryIPv6(ip6tablesTableNat, iptablesAppend, getDaemonBridgeNATArgsIPv6)
+	}
+
+	return nil // Both rules already exist
 }
 
 // StopDaemonNetNS stops and cleans up a daemon network namespace.
