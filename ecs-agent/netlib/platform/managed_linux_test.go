@@ -1255,3 +1255,96 @@ func TestIsDaemonNamespaceConfigured(t *testing.T) {
 		})
 	}
 }
+
+
+func TestBlockIMDSForDaemonBridge(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	netNSPath := "/var/run/netns/test-daemon-ns"
+
+	tests := []struct {
+		name        string
+		setupMock   func(*mock_ecscni.MockNetNSUtil, *mock_netlinkwrapper.MockNetLink)
+		expectError bool
+	}{
+		{
+			name: "successfully adds IMDS blackhole route",
+			setupMock: func(mockNsUtil *mock_ecscni.MockNetNSUtil, mockNetlink *mock_netlinkwrapper.MockNetLink) {
+				mockNsUtil.EXPECT().ExecInNSPath(netNSPath, gomock.Any()).DoAndReturn(
+					func(path string, f func(cnins.NetNS) error) error {
+						return f(nil)
+					},
+				).Times(1)
+				mockNetlink.EXPECT().RouteAdd(gomock.Any()).DoAndReturn(
+					func(route interface{}) error {
+						// Verify it's a blackhole route for IMDS
+						return nil
+					},
+				).Times(1)
+			},
+			expectError: false,
+		},
+		{
+			name: "route already exists - no error",
+			setupMock: func(mockNsUtil *mock_ecscni.MockNetNSUtil, mockNetlink *mock_netlinkwrapper.MockNetLink) {
+				mockNsUtil.EXPECT().ExecInNSPath(netNSPath, gomock.Any()).DoAndReturn(
+					func(path string, f func(cnins.NetNS) error) error {
+						return f(nil)
+					},
+				).Times(1)
+				mockNetlink.EXPECT().RouteAdd(gomock.Any()).Return(
+					errors.New("file exists"),
+				).Times(1)
+			},
+			expectError: false,
+		},
+		{
+			name: "fails to add route",
+			setupMock: func(mockNsUtil *mock_ecscni.MockNetNSUtil, mockNetlink *mock_netlinkwrapper.MockNetLink) {
+				mockNsUtil.EXPECT().ExecInNSPath(netNSPath, gomock.Any()).DoAndReturn(
+					func(path string, f func(cnins.NetNS) error) error {
+						return f(nil)
+					},
+				).Times(1)
+				mockNetlink.EXPECT().RouteAdd(gomock.Any()).Return(
+					errors.New("permission denied"),
+				).Times(1)
+			},
+			expectError: true,
+		},
+		{
+			name: "fails to execute in namespace",
+			setupMock: func(mockNsUtil *mock_ecscni.MockNetNSUtil, mockNetlink *mock_netlinkwrapper.MockNetLink) {
+				mockNsUtil.EXPECT().ExecInNSPath(netNSPath, gomock.Any()).Return(
+					errors.New("namespace not found"),
+				).Times(1)
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockNsUtil := mock_ecscni.NewMockNetNSUtil(ctrl)
+			mockNetlink := mock_netlinkwrapper.NewMockNetLink(ctrl)
+
+			ml := &managedLinux{
+				common: common{
+					nsUtil:  mockNsUtil,
+					netlink: mockNetlink,
+				},
+			}
+
+			tt.setupMock(mockNsUtil, mockNetlink)
+
+			err := ml.blockIMDSForDaemonBridge(netNSPath)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

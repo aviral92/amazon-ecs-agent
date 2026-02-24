@@ -4,7 +4,10 @@ import (
 	"context"
 	goErr "errors"
 	"fmt"
+	"net"
 	"path/filepath"
+	"strings"
+	"syscall"
 
 	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/ec2"
@@ -24,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	cnins "github.com/containernetworking/plugins/pkg/ns"
 	"github.com/pkg/errors"
+	"github.com/vishvananda/netlink"
 )
 
 const (
@@ -541,6 +545,13 @@ func (m *managedLinux) configureDaemonNetNS(ctx context.Context, taskID string, 
 				return errors.Wrap(err, "failed to setup daemon network namespace bridge")
 			}
 
+			// We block IMDS access in daemon-bridge tasks.
+			if err := m.blockIMDSForDaemonBridge(netNS.Path); err != nil {
+				logger.Warn("Failed to block IMDS for daemon-bridge", logger.Fields{
+					loggerfield.Error: err,
+				})
+			}
+
 			// Add NAT masquerade rule for external connectivity
 			err = m.addDaemonBridgeNATRule(ipComp)
 			if err != nil {
@@ -690,4 +701,45 @@ func (m *managedLinux) isDaemonNamespaceConfigured(netNSPath string) bool {
 	}
 
 	return true
+}
+
+
+// blockIMDSForDaemonBridge adds a blackhole route to block access to IMDS endpoint
+// from the daemon-bridge network namespace.
+func (m *managedLinux) blockIMDSForDaemonBridge(netNSPath string) error {
+	// IMDS IPv4 endpoint
+	imdsEndpoint := "169.254.169.254/32"
+	
+	_, imdsNetwork, err := net.ParseCIDR(imdsEndpoint)
+	if err != nil {
+		return fmt.Errorf("failed to parse IMDS endpoint: %w", err)
+	}
+	
+	// Execute inside the daemon namespace to add blackhole route
+	err = m.nsUtil.ExecInNSPath(netNSPath, func(_ cnins.NetNS) error {
+		route := &netlink.Route{
+			Dst:  imdsNetwork,
+			Type: syscall.RTN_BLACKHOLE,
+		}
+		
+		if err := m.netlink.RouteAdd(route); err != nil {
+			// Check if route already exists
+			if !strings.Contains(err.Error(), "file exists") {
+				return fmt.Errorf("failed to add IMDS blackhole route: %w", err)
+			}
+			logger.Debug("IMDS blackhole route for daemon-bridge already exists")
+		} else {
+			logger.Info("Successfully added IMDS blackhole route for daemon-bridge")
+		}
+		return nil
+	})
+	
+	if err != nil {
+		logger.Error("Failed to add IMDS blackhole route for daemon-bridge", logger.Fields{
+			loggerfield.Error: err,
+		})
+		return err
+	}
+	
+	return nil
 }
